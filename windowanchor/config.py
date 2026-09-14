@@ -29,6 +29,17 @@ class ConfigManager(QObject):
         # v1.6 新增
         "auto_restore_topmost": True,   # 自动恢复丢失的置顶状态
         "restore_interval": 1,           # 置顶状态检查间隔（秒），1秒确保层级快速恢复
+        # 2.0 新增：窗口靠边自动收起
+        "dock_enabled": True,            # 启用窗口靠边收起功能
+        "dock_width": 3,                 # 收起后露出的边宽度（像素）
+        "dock_threshold": 10,            # 触发收起的边缘阈值（像素）
+        # 2.0 新增：老板键
+        "boss_key_enabled": True,         # 启用老板键
+        "boss_key_modifiers": 0x0002 | 0x0004,  # Ctrl+Shift
+        "boss_key_key": 0x48,             # H 键
+        "boss_key_display": "Ctrl+Shift+H",
+        "boss_key_mute": False,           # 隐藏时同时静音
+        # 2.0 新增：窗口贴靠分屏
     }
 
     def __init__(self, parent=None):

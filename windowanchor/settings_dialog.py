@@ -185,6 +185,7 @@ class HotkeyRecorder(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pending_hotkey = None
+        self._pending_boss_hotkey = None
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -207,6 +208,7 @@ class HotkeyRecorder(QWidget):
     def set_hotkey(self, modifiers: int, vk: int):
         self._edit.set_hotkey(modifiers, vk)
         self._pending_hotkey = None
+        self._pending_boss_hotkey = None
 
     def get_hotkey(self):
         if self._pending_hotkey:
@@ -249,6 +251,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._config = config
         self._pending_hotkey = None
+        self._pending_boss_hotkey = None
 
         self.setWindowTitle("WindowAnchor 设置")
         self.setMinimumSize(500, 480)
@@ -301,7 +304,7 @@ class SettingsDialog(QDialog):
         about_group = QGroupBox("关于")
         about_layout = QVBoxLayout(about_group)
         about_label = QLabel(
-            "WindowAnchor v1.0\n"
+            "WindowAnchor v2.0\n"
             "轻量级 Windows 窗口置顶工具\n"
             "支持自定义热键、透明度、点击穿透、层级排序"
         )
@@ -413,6 +416,39 @@ class SettingsDialog(QDialog):
         restore_layout.addWidget(restore_hint)
         layout.addWidget(restore_group)
 
+        # 2.0 新增：窗口靠边收起
+        dock_group = QGroupBox("窗口靠边收起（类似QQ停靠）")
+        dock_layout = QVBoxLayout(dock_group)
+        self._dock_enabled_cb = QCheckBox("启用窗口靠边收起功能")
+        dock_layout.addWidget(self._dock_enabled_cb)
+
+        dock_hint = QLabel("在已置顶窗口的子菜单中可对单个窗口启用/禁用靠边收起，并设置收起方向。")
+        dock_hint.setStyleSheet("color: #666; font-size: 12px;")
+        dock_hint.setWordWrap(True)
+        dock_layout.addWidget(dock_hint)
+        layout.addWidget(dock_group)
+
+        # 2.0 新增：老板键
+        boss_group = QGroupBox("老板键 / 一键隐藏")
+        boss_layout = QVBoxLayout(boss_group)
+        self._boss_key_enabled_cb = QCheckBox("启用老板键")
+        boss_layout.addWidget(self._boss_key_enabled_cb)
+
+        boss_hotkey_label = QLabel("老板键热键：")
+        self._boss_key_recorder = HotkeyRecorder()
+        self._boss_key_recorder.hotkey_changed.connect(self._on_boss_hotkey_recorded)
+        boss_layout.addWidget(boss_hotkey_label)
+        boss_layout.addWidget(self._boss_key_recorder)
+
+        self._boss_key_mute_cb = QCheckBox("隐藏时同时静音置顶窗口对应的应用")
+        boss_layout.addWidget(self._boss_key_mute_cb)
+
+        boss_hint = QLabel("按下老板键瞬间隐藏所有置顶窗口，再按一次恢复。隐藏期间托盘图标变红色。")
+        boss_hint.setStyleSheet("color: #666; font-size: 12px;")
+        boss_hint.setWordWrap(True)
+        boss_layout.addWidget(boss_hint)
+        layout.addWidget(boss_group)
+
 
         layout.addStretch()
         return widget
@@ -427,11 +463,20 @@ class SettingsDialog(QDialog):
         vk = self._config.get("hotkey_key")
         self._hotkey_recorder.set_hotkey(mods, vk)
         self._pending_hotkey = None
+        self._pending_boss_hotkey = None
 
         self._opacity_slider.setValue(self._config.get("default_opacity"))
 
         self._auto_restore_cb.setChecked(self._config.get("auto_restore_topmost"))
         self._restore_interval.setValue(self._config.get("restore_interval", 5))
+        # 2.0 新增功能配置
+        self._dock_enabled_cb.setChecked(self._config.get("dock_enabled", True))
+        self._boss_key_enabled_cb.setChecked(self._config.get("boss_key_enabled", True))
+        boss_mods = self._config.get("boss_key_modifiers")
+        boss_vk = self._config.get("boss_key_key")
+        if boss_mods and boss_vk:
+            self._boss_key_recorder.set_hotkey(boss_mods, boss_vk)
+        self._boss_key_mute_cb.setChecked(self._config.get("boss_key_mute", False))
 
     def _apply_settings(self):
         from . import winapi
@@ -461,6 +506,16 @@ class SettingsDialog(QDialog):
         self._config.set("auto_restore_topmost", self._auto_restore_cb.isChecked())
         self._config.set("restore_interval", self._restore_interval.value())
 
+        # 2.0 新增功能配置保存
+        self._config.set("dock_enabled", self._dock_enabled_cb.isChecked())
+        self._config.set("boss_key_enabled", self._boss_key_enabled_cb.isChecked())
+        boss_mods, boss_vk = self._boss_key_recorder.get_hotkey()
+        if boss_mods and boss_vk:
+            self._config.set("boss_key_modifiers", boss_mods)
+            self._config.set("boss_key_key", boss_vk)
+            self._config.set("boss_key_display", display_hotkey(boss_mods, boss_vk))
+        self._config.set("boss_key_mute", self._boss_key_mute_cb.isChecked())
+
         self.settings_applied.emit()
 
     def _on_ok(self):
@@ -469,6 +524,9 @@ class SettingsDialog(QDialog):
 
     def _on_apply(self):
         self._apply_settings()
+
+    def _on_boss_hotkey_recorded(self, modifiers: int, vk: int):
+        self._pending_boss_hotkey = (modifiers, vk)
 
     def _on_hotkey_recorded(self, modifiers: int, vk: int):
         self._pending_hotkey = (modifiers, vk)

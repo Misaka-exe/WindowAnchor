@@ -1,8 +1,49 @@
 """系统托盘 v1.6.1：修复菜单重复显示bug，优化交互。"""
-from PySide6.QtCore import QObject, Signal, Qt
-from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QPen, QBrush, QFont
-from PySide6.QtWidgets import QSystemTrayIcon, QMenu
+from PySide6.QtCore import QObject, Signal, Qt, QRect
+from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QPen, QBrush, QFont, QPainterPath
+from PySide6.QtWidgets import QSystemTrayIcon, QMenu, QStyle
 from . import winapi
+
+
+class PinMenu(QMenu):
+    """自定义菜单：把默认的 tear-off 虚线横条改成右上角的图钉图标。"""
+
+    def paintEvent(self, event):
+        """重写绘制：先调用默认绘制，然后在右上角画图钉图标覆盖掉虚线横条。"""
+        super().paintEvent(event)
+
+        # 在右上角画一个图钉图标，覆盖掉默认的 tear-off 虚线横条
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # 图钉图标位置：右上角
+        pin_size = 16
+        pin_x = self.width() - pin_size - 8
+        pin_y = 2
+
+        # 画一个半透明背景框
+        painter.setBrush(QBrush(QColor(60, 60, 60, 200)))
+        painter.setPen(QPen(QColor(100, 100, 100, 200), 1))
+        painter.drawRoundedRect(pin_x - 2, pin_y - 2, pin_size + 4, pin_size + 4, 3, 3)
+
+        # 画图钉图标（简化版：红色圆形+针脚）
+        # 钉帽
+        painter.setBrush(QBrush(QColor(220, 60, 60, 255)))
+        painter.setPen(QPen(QColor(180, 40, 40, 255), 1))
+        painter.drawEllipse(pin_x + 2, pin_y + 2, pin_size - 8, pin_size - 8)
+
+        # 针尖
+        painter.setBrush(QBrush(QColor(120, 120, 120, 255)))
+        painter.setPen(QPen(QColor(0, 0, 0, 0)))
+        from PySide6.QtGui import QPolygonF
+        from PySide6.QtCore import QPointF
+        painter.drawPolygon(QPolygonF([
+            QPointF(pin_x + pin_size / 2, pin_y + pin_size - 6),
+            QPointF(pin_x + pin_size / 2 - 2, pin_y + pin_size - 2),
+            QPointF(pin_x + pin_size / 2 + 2, pin_y + pin_size - 2)
+        ]))
+
+        painter.end()
 
 
 def _create_tray_icon(active: bool = False) -> QIcon:
@@ -39,6 +80,11 @@ class TrayController(QObject):
     click_through_toggled = Signal(int)
     bring_front_requested = Signal(int)
     send_back_requested = Signal(int)
+    # 2.0 新增信号
+    dock_toggle_requested = Signal()       # 切换当前窗口靠边收起
+    dock_toggle_window_requested = Signal(int)   # 切换指定窗口靠边收起 (hwnd)
+    dock_direction_requested = Signal(int, str)  # 设置指定窗口收起方向 (hwnd, direction)
+    boss_key_requested = Signal()          # 触发老板键
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -47,8 +93,11 @@ class TrayController(QObject):
         self._pinned_provider = None
         self._opacity_provider = None
         self._click_through_provider = None
+        self._dock_state_provider = None
+        self._boss_mode = False
 
-        self._menu = QMenu()
+        self._menu = PinMenu()
+        self._menu.setTearOffEnabled(True)  # 菜单可撕下，撕下后常驻不自动关闭
         self._menu.aboutToShow.connect(self._on_menu_about_to_show)
         self._tray.setContextMenu(self._menu)
         self._tray.show()
@@ -64,6 +113,19 @@ class TrayController(QObject):
 
     def set_click_through_provider(self, callback):
         self._click_through_provider = callback
+
+    def set_dock_state_provider(self, callback):
+        """设置靠边收起状态回调，参数 hwnd，返回 (is_enabled, direction)。"""
+        self._dock_state_provider = callback
+
+    def _get_dock_state(self, hwnd):
+        """获取窗口的靠边收起状态，返回 (is_enabled, direction)。"""
+        if not self._dock_state_provider:
+            return (False, "auto")
+        try:
+            return self._dock_state_provider(hwnd)
+        except Exception:
+            return (False, "auto")
 
 
     def _on_menu_about_to_show(self):
@@ -99,6 +161,15 @@ class TrayController(QObject):
         toggle_action.triggered.connect(self.toggle_requested.emit)
         self._menu.addAction(toggle_action)
         self._dynamic_items.append(toggle_action)
+
+        self._menu.addSeparator()
+
+        # 2.7 老板键（2.0新增）
+        boss_text = "👔 老板键：隐藏所有窗口" if not self._boss_mode else "👔 老板键：恢复所有窗口"
+        boss_action = QAction(boss_text, self._menu)
+        boss_action.triggered.connect(self.boss_key_requested.emit)
+        self._menu.addAction(boss_action)
+        self._dynamic_items.append(boss_action)
 
         self._menu.addSeparator()
 
@@ -159,6 +230,37 @@ class TrayController(QObject):
                 ct_action.triggered.connect(lambda checked, h=hwnd: self.click_through_toggled.emit(h))
                 item_menu.addAction(ct_action)
                 self._dynamic_items.append(ct_action)
+
+                item_menu.addSeparator()
+
+                # 靠边收起（2.0新增）
+                dock_enabled, dock_direction = self._get_dock_state(hwnd)
+                dock_action = QAction("📎 靠边收起", item_menu)
+                dock_action.setCheckable(True)
+                dock_action.setChecked(dock_enabled)
+                dock_action.triggered.connect(lambda checked, h=hwnd: self.dock_toggle_window_requested.emit(h))
+                item_menu.addAction(dock_action)
+                self._dynamic_items.append(dock_action)
+
+                # 收起方向子菜单（只有启用了靠边收起才显示）
+                if dock_enabled:
+                    direction_menu = QMenu("🧭 收起方向", item_menu)
+                    self._dynamic_items.append(direction_menu)
+                    directions = [
+                        ("auto", "自动（贴近哪边收哪边）"),
+                        ("left", "左边"),
+                        ("right", "右边"),
+                        ("top", "上边"),
+                        ("bottom", "下边"),
+                    ]
+                    for dir_key, dir_name in directions:
+                        act = QAction(dir_name, direction_menu)
+                        act.setCheckable(True)
+                        act.setChecked(dir_key == dock_direction)
+                        act.triggered.connect(lambda checked, h=hwnd, d=dir_key: self.dock_direction_requested.emit(h, d))
+                        direction_menu.addAction(act)
+                        self._dynamic_items.append(act)
+                    item_menu.addMenu(direction_menu)
 
                 item_menu.addSeparator()
 
@@ -232,3 +334,23 @@ class TrayController(QObject):
 
     def set_tooltip(self, text: str):
         self._tray.setToolTip(text)
+
+    def set_boss_mode(self, active: bool):
+        """设置老板键模式，激活时托盘图标变红色。"""
+        self._boss_mode = active
+        if active:
+            # 老板键激活时用红色图标
+            pm = QPixmap(32, 32)
+            pm.fill(QColor(0, 0, 0, 0))
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setBrush(QBrush(QColor(220, 50, 50, 255)))
+            p.setPen(QPen(QColor(150, 0, 0, 255), 1.5))
+            p.drawEllipse(8, 4, 16, 16)
+            p.setPen(QPen(QColor(255, 255, 255, 255), 2))
+            p.drawLine(12, 12, 20, 20)
+            p.drawLine(20, 12, 12, 20)
+            p.end()
+            self._tray.setIcon(QIcon(pm))
+        else:
+            self._tray.setIcon(_create_tray_icon(False))

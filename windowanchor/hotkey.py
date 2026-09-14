@@ -57,8 +57,9 @@ class HotkeyThread(QObject):
     triggered = Signal()
     error = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, name="main"):
         super().__init__(parent)
+        self._name = name
         self._thread = None
         self._running = threading.Event()
         self._msg_thread_id = None
@@ -114,7 +115,7 @@ class HotkeyThread(QObject):
 
         wc = win32gui.WNDCLASS()
         wc.lpfnWndProc = self._wnd_proc
-        wc.lpszClassName = "WindowAnchorHotkeyHidden_v16"
+        wc.lpszClassName = f"WindowAnchorHotkey_{self._name}_v16"
         wc.hInstance = self._hinst
         try:
             self._class_atom = win32gui.RegisterClass(wc)
@@ -124,7 +125,7 @@ class HotkeyThread(QObject):
             return
 
         self._hwnd = win32gui.CreateWindowEx(
-            0, self._class_atom, "WindowAnchorHotkey", 0, 0, 0, 0, 0, 0, 0,
+            0, self._class_atom, f"WindowAnchorHotkey_{self._name}", 0, 0, 0, 0, 0, 0, 0,
             self._hinst, None,
         )
         self._register_hotkey()
